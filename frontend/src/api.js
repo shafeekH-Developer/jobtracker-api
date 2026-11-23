@@ -2,9 +2,10 @@ const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:3000").replac
 const TOKEN_KEY = "jobtracker_token";
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, data = null) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -60,7 +61,7 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
 
   if (!res.ok) {
     const message = (data && (data.error || data.message)) || `Request failed (${res.status})`;
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, data);
   }
   return data;
 }
@@ -70,6 +71,18 @@ export const api = {
     request("/auth/register", { method: "POST", body: { email, password }, auth: false }),
   login: (email, password) =>
     request("/auth/login", { method: "POST", body: { email, password }, auth: false }),
+  verifyEmail: (email, code) =>
+    request("/auth/verify-email", { method: "POST", body: { email, code }, auth: false }),
+  resendCode: (email, purpose) =>
+    request("/auth/resend-code", { method: "POST", body: { email, purpose }, auth: false }),
+  forgotPassword: (email) =>
+    request("/auth/forgot-password", { method: "POST", body: { email }, auth: false }),
+  resetPassword: (email, code, newPassword) =>
+    request("/auth/reset-password", {
+      method: "POST",
+      body: { email, code, new_password: newPassword },
+      auth: false,
+    }),
   list: () => request("/applications"),
   create: (data) => request("/applications", { method: "POST", body: data }),
   update: (id, data) => request(`/applications/${id}`, { method: "PUT", body: data }),

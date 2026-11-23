@@ -6,10 +6,91 @@ const router = express.Router();
 router.use(requireAuth);
 
 const STATUSES = ["Wishlist", "Applied", "Interview", "Offer", "Rejected"];
+const JOB_TYPES = ["Remote", "Hybrid", "On-site"];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Text fields and their maximum lengths (the same limits as the database columns).
+const TEXT_LIMITS = {
+  job_link: 2000,
+  notes: 5000,
+  salary: 80,
+  location: 120,
+  contact_name: 120,
+  contact_email: 160,
+};
 
 function parseId(req) {
   const id = Number(req.params.id);
   return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+// Checks the request body and returns { error } or { values }.
+// For a partial update (PUT) only the fields that were sent are returned.
+function readBody(body, { partial }) {
+  const values = {};
+  const has = (key) => body[key] !== undefined;
+
+  // company and role (required)
+  for (const key of ["company", "role"]) {
+    if (has(key) || !partial) {
+      const value = typeof body[key] === "string" ? body[key].trim() : "";
+      if (!value) return { error: `${key} is required` };
+      if (value.length > 150) return { error: `${key} must be 150 characters or fewer` };
+      values[key] = value;
+    }
+  }
+
+  // status
+  if (has("status")) {
+    if (!STATUSES.includes(body.status)) {
+      return { error: `status must be one of: ${STATUSES.join(", ")}` };
+    }
+    values.status = body.status;
+  }
+
+  // job type
+  if (has("job_type")) {
+    if (!JOB_TYPES.includes(body.job_type)) {
+      return { error: `job_type must be one of: ${JOB_TYPES.join(", ")}` };
+    }
+    values.job_type = body.job_type;
+  }
+
+  // applied_date (cannot be empty)
+  if (has("applied_date")) {
+    if (!DATE_RE.test(String(body.applied_date))) {
+      return { error: "applied_date must be a valid date (YYYY-MM-DD)" };
+    }
+    values.applied_date = body.applied_date;
+  }
+
+  // optional dates (an empty value clears the date)
+  for (const key of ["interview_date", "follow_up_date"]) {
+    if (has(key)) {
+      if (body[key] === null || body[key] === "") {
+        values[key] = null;
+      } else if (DATE_RE.test(String(body[key]))) {
+        values[key] = body[key];
+      } else {
+        return { error: `${key} must be a valid date (YYYY-MM-DD)` };
+      }
+    }
+  }
+
+  // text fields
+  for (const [key, max] of Object.entries(TEXT_LIMITS)) {
+    if (has(key)) {
+      const value = body[key] === null ? "" : String(body[key]).trim();
+      if (value.length > max) return { error: `${key} must be ${max} characters or fewer` };
+      values[key] = value;
+    }
+  }
+
+  return { values };
+}
+
+function isBadDate(err) {
+  return err.code === "22007" || err.code === "22008";
 }
 
 // GET /applications  (optional ?status=Interview)
@@ -76,24 +157,23 @@ router.get("/:id", async (req, res) => {
 // POST /applications
 router.post("/", async (req, res) => {
   try {
-    const { company, role, status, applied_date, job_link, notes } = req.body;
-    if (!company || !company.trim() || !role || !role.trim()) {
-      return res.status(400).json({ error: "company and role are required" });
-    }
-    if (status && !STATUSES.includes(status)) {
-      return res.status(400).json({ error: `status must be one of: ${STATUSES.join(", ")}` });
-    }
+    const { error, values } = readBody(req.body || {}, { partial: false });
+    if (error) return res.status(400).json({ error });
+
+    // Only the fields that were sent are inserted; the database fills in the defaults.
+    const columns = Object.keys(values);
+    const params = Object.values(values);
+    columns.push("user_id");
+    params.push(req.userId);
+    const placeholders = params.map((_, i) => `$${i + 1}`);
+
     const result = await pool.query(
-      `INSERT INTO applications (company, role, status, applied_date, job_link, notes, user_id)
-       VALUES ($1, $2, COALESCE($3, 'Applied'), COALESCE($4::date, CURRENT_DATE), COALESCE($5, ''), COALESCE($6, ''), $7)
-       RETURNING *`,
-      [company.trim(), role.trim(), status || null, applied_date || null, job_link ?? null, notes ?? null, req.userId]
+      `INSERT INTO applications (${columns.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`,
+      params
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    if (err.code === "22007" || err.code === "22008") {
-      return res.status(400).json({ error: "applied_date must be a valid date (YYYY-MM-DD)" });
-    }
+    if (isBadDate(err)) return res.status(400).json({ error: "That date is not valid" });
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
@@ -104,45 +184,29 @@ router.put("/:id", async (req, res) => {
   try {
     const id = parseId(req);
     if (!id) return res.status(404).json({ error: "Application not found" });
-    const { company, role, status, applied_date, job_link, notes } = req.body;
-    if (company !== undefined && !String(company).trim()) {
-      return res.status(400).json({ error: "company cannot be empty" });
+
+    const { error, values } = readBody(req.body || {}, { partial: true });
+    if (error) return res.status(400).json({ error });
+
+    const columns = Object.keys(values);
+    if (columns.length === 0) {
+      return res.status(400).json({ error: "Nothing to update" });
     }
-    if (role !== undefined && !String(role).trim()) {
-      return res.status(400).json({ error: "role cannot be empty" });
-    }
-    if (status !== undefined && !STATUSES.includes(status)) {
-      return res.status(400).json({ error: `status must be one of: ${STATUSES.join(", ")}` });
-    }
+
+    // Column names come from the fixed list above, never from the request itself.
+    const setClause = columns.map((col, i) => `${col} = $${i + 1}`).join(", ");
+    const params = [...Object.values(values), id, req.userId];
+
     const result = await pool.query(
-      `UPDATE applications SET
-         company = COALESCE($1, company),
-         role = COALESCE($2, role),
-         status = COALESCE($3, status),
-         applied_date = COALESCE($4::date, applied_date),
-         job_link = COALESCE($5, job_link),
-         notes = COALESCE($6, notes)
-       WHERE id = $7 AND user_id = $8
-       RETURNING *`,
-      [
-        company !== undefined ? String(company).trim() : null,
-        role !== undefined ? String(role).trim() : null,
-        status ?? null,
-        applied_date ?? null,
-        job_link ?? null,
-        notes ?? null,
-        id,
-        req.userId,
-      ]
+      `UPDATE applications SET ${setClause} WHERE id = $${columns.length + 1} AND user_id = $${columns.length + 2} RETURNING *`,
+      params
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Application not found" });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    if (err.code === "22007" || err.code === "22008") {
-      return res.status(400).json({ error: "applied_date must be a valid date (YYYY-MM-DD)" });
-    }
+    if (isBadDate(err)) return res.status(400).json({ error: "That date is not valid" });
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
