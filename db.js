@@ -1,9 +1,10 @@
 require("dotenv").config();
-const { Pool } = require("pg");
+const { Pool, types } = require("pg");
 
-// One shared pool of database connections for the whole app
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+// Return DATE columns (like applied_date) as plain "YYYY-MM-DD" text,
+// so the date never shifts because of time zones.
+types.setTypeParser(1082, (value) => value);
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 module.exports = pool;

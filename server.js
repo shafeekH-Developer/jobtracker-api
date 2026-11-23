@@ -6,12 +6,20 @@ if (!process.env.JWT_SECRET) {
 }
 
 const express = require("express");
+const cors = require("cors");
 const authRoutes = require("./routes/auth");
 const applicationRoutes = require("./routes/applications");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
+// FRONTEND_URL can hold one or more comma-separated site addresses.
+// When it is not set (local development), any origin is allowed.
+const allowedOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(",").map((url) => url.trim())
+  : true;
+
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 
 app.get("/", (req, res) => {
