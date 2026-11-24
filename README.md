@@ -2,7 +2,7 @@
 
 A full-stack web app for tracking job applications. Add every job you apply for, move it through your hiring pipeline on a Kanban board, get reminders for interviews and follow-ups, and see how your job hunt is going.
 
-**Live demo:** jobtracker-webapp.vercel.app
+**Live demo:** https://jobtracker-webapp.vercel.app/
 **API:** https://jobtracker-api-gc38.onrender.com
 
 > The app runs on free hosting. If nobody has used it for a while, the first request can take up to a minute while the server wakes up.
